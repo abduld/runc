@@ -79,11 +79,11 @@ func (m *mockProcess) signal(_ os.Signal) error {
 	return nil
 }
 
-func (p *mockProcess) externalDescriptors() []string {
+func (m *mockProcess) externalDescriptors() []string {
 	return []string{}
 }
 
-func (p *mockProcess) setExternalDescriptors(newFds []string) {
+func (m *mockProcess) setExternalDescriptors(newFds []string) {
 }
 
 func TestGetContainerPids(t *testing.T) {
@@ -166,7 +166,7 @@ func TestGetContainerState(t *testing.T) {
 			},
 		},
 	}
-	container.state = &nullState{c: container}
+	container.state = &createdState{c: container}
 	state, err := container.State()
 	if err != nil {
 		t.Fatal(err)

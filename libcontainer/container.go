@@ -1,4 +1,4 @@
-// Libcontainer provides a native Go implementation for creating containers
+// Package libcontainer provides a native Go implementation for creating containers
 // with namespaces, cgroups, capabilities, and filesystem access controls.
 // It allows you to manage the lifecycle of the container performing additional operations
 // after the container is created.
@@ -6,44 +6,45 @@ package libcontainer
 
 import (
 	"os"
+	"time"
 
 	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
-// The status of a container.
+// Status is the status of a container.
 type Status int
 
 const (
-	// The container exists and is running.
-	Running Status = iota + 1
+	// Created is the status that denotes the container exists but has not been run yet
+	Created Status = iota
 
-	// The container exists, it is in the process of being paused.
+	// Created is the status that denotes the container exists and is running.
+	Running
+
+	// Pausing is the status that denotes the container exists, it is in the process of being paused.
 	Pausing
 
-	// The container exists, but all its processes are paused.
+	// Paused is the status that denotes the container exists, but all its processes are paused.
 	Paused
 
-	// The container exists, but its state is saved on disk
-	Checkpointed
-
-	// The container does not exist.
+	// Destroyed is the status that denotes the container does not exist.
 	Destroyed
 )
 
 func (s Status) String() string {
 	switch s {
+	case Created:
+		return "created"
 	case Running:
 		return "running"
 	case Pausing:
 		return "pausing"
 	case Paused:
 		return "paused"
-	case Checkpointed:
-		return "checkpointed"
 	case Destroyed:
 		return "destroyed"
 	default:
-		return "undefined"
+		return "unknown"
 	}
 }
 
@@ -56,14 +57,17 @@ type BaseState struct {
 	// InitProcessPid is the init process id in the parent namespace.
 	InitProcessPid int `json:"init_process_pid"`
 
-	// InitProcessStartTime is the init process start time.
+	// InitProcessStartTime is the init process start time in clock cycles since boot time.
 	InitProcessStartTime string `json:"init_process_start"`
+
+	// Created is the unix timestamp for the creation time of the container in UTC
+	Created time.Time `json:"created"`
 
 	// Config is the container's configuration.
 	Config configs.Config `json:"config"`
 }
 
-// A libcontainer container object.
+// BaseContainer is a libcontainer container object.
 //
 // Each container is thread-safe within the same process. Since a container can
 // be destroyed by a separate process, any function may return that the container

@@ -9,6 +9,7 @@ import (
 
 	"github.com/Sirupsen/logrus"
 	"github.com/opencontainers/runc/libcontainer/configs"
+	"github.com/opencontainers/runc/libcontainer/utils"
 )
 
 func newStateTransitionError(from, to containerState) error {
@@ -49,15 +50,17 @@ func destroy(c *linuxContainer) error {
 	if herr := runPoststopHooks(c); err == nil {
 		err = herr
 	}
+	c.state = &stoppedState{c: c}
 	return err
 }
 
 func runPoststopHooks(c *linuxContainer) error {
 	if c.config.Hooks != nil {
 		s := configs.HookState{
-			Version: c.config.Version,
-			ID:      c.id,
-			Root:    c.config.Rootfs,
+			Version:    c.config.Version,
+			ID:         c.id,
+			Root:       c.config.Rootfs,
+			BundlePath: utils.SearchLabels(c.config.Labels, "bundle"),
 		}
 		for _, hook := range c.config.Hooks.Poststop {
 			if err := hook.Run(s); err != nil {
@@ -119,7 +122,7 @@ func (r *runningState) transition(s containerState) error {
 	case *pausedState:
 		r.c.state = s
 		return nil
-	case *runningState, *nullState:
+	case *runningState:
 		return nil
 	}
 	return newStateTransitionError(r, s)
@@ -148,7 +151,7 @@ func (p *pausedState) status() Status {
 
 func (p *pausedState) transition(s containerState) error {
 	switch s.(type) {
-	case *runningState:
+	case *runningState, *stoppedState:
 		p.c.state = s
 		return nil
 	case *pausedState:
@@ -158,6 +161,16 @@ func (p *pausedState) transition(s containerState) error {
 }
 
 func (p *pausedState) destroy() error {
+	isRunning, err := p.c.isRunning()
+	if err != nil {
+		return err
+	}
+	if !isRunning {
+		if err := p.c.cgroupManager.Freeze(configs.Thawed); err != nil {
+			return err
+		}
+		return destroy(p.c)
+	}
 	return newGenericError(fmt.Errorf("container is paused"), ContainerPaused)
 }
 
@@ -191,27 +204,25 @@ func (r *restoredState) destroy() error {
 	return destroy(r.c)
 }
 
-// nullState is used whenever a container is restored, loaded, or setting additional
+// createdState is used whenever a container is restored, loaded, or setting additional
 // processes inside and it should not be destroyed when it is exiting.
-type nullState struct {
+type createdState struct {
 	c *linuxContainer
 	s Status
 }
 
-func (n *nullState) status() Status {
+func (n *createdState) status() Status {
 	return n.s
 }
 
-func (n *nullState) transition(s containerState) error {
-	switch s.(type) {
-	case *restoredState:
-		n.c.state = s
-	default:
-		// do nothing for null states
-	}
+func (n *createdState) transition(s containerState) error {
+	n.c.state = s
 	return nil
 }
 
-func (n *nullState) destroy() error {
-	return nil
+func (n *createdState) destroy() error {
+	if err := n.c.refreshState(); err != nil {
+		return err
+	}
+	return n.c.state.destroy()
 }

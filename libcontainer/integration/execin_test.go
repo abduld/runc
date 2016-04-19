@@ -2,14 +2,17 @@ package integration
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/opencontainers/runc/libcontainer"
+	"github.com/opencontainers/runc/libcontainer/configs"
 )
 
 func TestExecIn(t *testing.T) {
@@ -60,14 +63,34 @@ func TestExecIn(t *testing.T) {
 	}
 }
 
+func TestExecInUsernsRlimit(t *testing.T) {
+	if _, err := os.Stat("/proc/self/ns/user"); os.IsNotExist(err) {
+		t.Skip("userns is unsupported")
+	}
+
+	testExecInRlimit(t, true)
+}
+
 func TestExecInRlimit(t *testing.T) {
+	testExecInRlimit(t, false)
+}
+
+func testExecInRlimit(t *testing.T, userns bool) {
 	if testing.Short() {
 		return
 	}
+
 	rootfs, err := newRootfs()
 	ok(t, err)
 	defer remove(rootfs)
+
 	config := newTemplateConfig(rootfs)
+	if userns {
+		config.UidMappings = []configs.IDMap{{0, 0, 1000}}
+		config.GidMappings = []configs.IDMap{{0, 0, 1000}}
+		config.Namespaces = append(config.Namespaces, configs.Namespace{Type: configs.NEWUSER})
+	}
+
 	container, err := newContainer(config)
 	ok(t, err)
 	defer container.Destroy()
@@ -93,6 +116,10 @@ func TestExecInRlimit(t *testing.T) {
 		Stdin:  buffers.Stdin,
 		Stdout: buffers.Stdout,
 		Stderr: buffers.Stderr,
+		Rlimits: []configs.Rlimit{
+			// increase process rlimit higher than container rlimit to test per-process limit
+			{Type: syscall.RLIMIT_NOFILE, Hard: 1026, Soft: 1026},
+		},
 	}
 	err = container.Start(ps)
 	ok(t, err)
@@ -102,8 +129,8 @@ func TestExecInRlimit(t *testing.T) {
 	waitProcess(process, t)
 
 	out := buffers.Stdout.String()
-	if limit := strings.TrimSpace(out); limit != "1025" {
-		t.Fatalf("expected rlimit to be 1025, got %s", limit)
+	if limit := strings.TrimSpace(out); limit != "1026" {
+		t.Fatalf("expected rlimit to be 1026, got %s", limit)
 	}
 }
 
@@ -398,5 +425,64 @@ func TestExecInOomScoreAdj(t *testing.T) {
 	out := buffers.Stdout.String()
 	if oomScoreAdj := strings.TrimSpace(out); oomScoreAdj != strconv.Itoa(config.OomScoreAdj) {
 		t.Fatalf("expected oomScoreAdj to be %d, got %s", config.OomScoreAdj, oomScoreAdj)
+	}
+}
+
+func TestExecInUserns(t *testing.T) {
+	if _, err := os.Stat("/proc/self/ns/user"); os.IsNotExist(err) {
+		t.Skip("userns is unsupported")
+	}
+	if testing.Short() {
+		return
+	}
+	rootfs, err := newRootfs()
+	ok(t, err)
+	defer remove(rootfs)
+	config := newTemplateConfig(rootfs)
+	config.UidMappings = []configs.IDMap{{0, 0, 1000}}
+	config.GidMappings = []configs.IDMap{{0, 0, 1000}}
+	config.Namespaces = append(config.Namespaces, configs.Namespace{Type: configs.NEWUSER})
+	container, err := newContainer(config)
+	ok(t, err)
+	defer container.Destroy()
+
+	// Execute a first process in the container
+	stdinR, stdinW, err := os.Pipe()
+	ok(t, err)
+
+	process := &libcontainer.Process{
+		Cwd:   "/",
+		Args:  []string{"cat"},
+		Env:   standardEnvironment,
+		Stdin: stdinR,
+	}
+	err = container.Start(process)
+	stdinR.Close()
+	defer stdinW.Close()
+	ok(t, err)
+
+	initPID, err := process.Pid()
+	ok(t, err)
+	initUserns, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/user", initPID))
+	ok(t, err)
+
+	buffers := newStdBuffers()
+	process2 := &libcontainer.Process{
+		Cwd:  "/",
+		Args: []string{"readlink", "/proc/self/ns/user"},
+		Env: []string{
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		},
+		Stdout: buffers.Stdout,
+		Stderr: os.Stderr,
+	}
+	err = container.Start(process2)
+	ok(t, err)
+	waitProcess(process2, t)
+	stdinW.Close()
+	waitProcess(process, t)
+
+	if out := strings.TrimSpace(buffers.Stdout.String()); out != initUserns {
+		t.Errorf("execin userns(%s), wanted %s", out, initUserns)
 	}
 }
